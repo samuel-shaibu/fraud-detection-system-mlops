@@ -1,0 +1,8 @@
+# Create a .gitignore so you don't upload junk (copy-paste this entire block)
+@"
+.venv/
+__pycache__/
+.DS_Store
+*.tar.gz
+*.csv
+"@ | Out-File -Encoding API -FilePath .gitignore
