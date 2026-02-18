@@ -1,43 +1,88 @@
-import boto3
-import sagemaker
-from sagemaker.inputs import TrainingInput
+import pandas as pd
+import xgboost as xgb
+import mlflow
+import mlflow.xgboost
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+import os
 
 # --- CONFIGURATION ---
-# Your specific bucket and role
-BUCKET_NAME = "fraud-detection-197479160331" 
-ROLE_ARN = "arn:aws:iam::197479160331:role/FraudSageMakerRole"
+EXPERIMENT_NAME = "Fraud_Detection_System"
+DATA_PATH = 'data/raw/train.csv'
 
-# 1. Setup Session
-session = sagemaker.Session()
-region = session.boto_region_name
+def train():
+    print("🚀 Starting Training...")
+    
+    # 1. Setup MLflow
+    mlflow.set_experiment(EXPERIMENT_NAME)
+    
+    # 2. Load Data (THE FIX IS HERE)
+    # We use header=None because the file has no column names.
+    try:
+        df = pd.read_csv(DATA_PATH, header=None)
+    except FileNotFoundError:
+        print(f"❌ Error: The file {DATA_PATH} was not found.")
+        return
 
-# 2. Get the XGBoost Container Image (The "Chef")
-container = sagemaker.image_uris.retrieve("xgboost", region, "latest")
-print(f"🤖 Using Container: {container}")
+    # We assume Column 0 is the Target (0=Legit, 1=Fraud)
+    # We rename it explicitly so we can drop it safely
+    df.rename(columns={0: 'is_fraud'}, inplace=True)
+    
+    print(f"   - Loaded {len(df)} rows of data")
+    print(f"   - Target distribution: \n{df['is_fraud'].value_counts()}")
 
-# 3. Define the Training Job
-xgb = sagemaker.estimator.Estimator(
-    image_uri=container,
-    role=ROLE_ARN,
-    instance_count=1,
-    instance_type='ml.m4.xlarge', # The Server Type (~$0.10/hour)
-    output_path=f"s3://{BUCKET_NAME}/output",
-    sagemaker_session=session
-)
+    # 3. Split Features (X) and Target (y)
+    X = df.drop('is_fraud', axis=1) # Drop the target column to get features
+    y = df['is_fraud']              # This is our target
+    
+    # 4. Split into Train/Test sets
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    
+    # 5. Start MLflow Run
+    with mlflow.start_run():
+        print("🧠 Training XGBoost Model...")
+        
+        # Hyperparameters
+        params = {
+            "n_estimators": 100,
+            "max_depth": 4,           # Increased slightly for better learning
+            "learning_rate": 0.1,
+            "objective": "binary:logistic",
+            "eval_metric": "logloss"
+        }
+        
+        # Log params to MLflow
+        mlflow.log_params(params)
+        
+        # Train
+        model = xgb.XGBClassifier(**params)
+        model.fit(X_train, y_train)
+        
+        # Predict
+        predictions = model.predict(X_test)
+        
+        # Calculate Metrics
+        acc = accuracy_score(y_test, predictions)
+        # zero_division=0 prevents crashes if the model predicts only one class
+        prec = precision_score(y_test, predictions, zero_division=0)
+        rec = recall_score(y_test, predictions, zero_division=0)
+        f1 = f1_score(y_test, predictions, zero_division=0)
+        
+        print(f"📊 Accuracy:  {acc:.4f}")
+        print(f"📊 Precision: {prec:.4f}")
+        print(f"📊 Recall:    {rec:.4f}")
+        print(f"📊 F1 Score:  {f1:.4f}")
+        
+        # Log metrics to MLflow
+        mlflow.log_metric("accuracy", acc)
+        mlflow.log_metric("precision", prec)
+        mlflow.log_metric("recall", rec)
+        mlflow.log_metric("f1_score", f1)
+        
+        # Log the actual model file so we can deploy it later
+        mlflow.xgboost.log_model(model, "model")
+        
+        print("✅ Training Complete. Check MLflow dashboard!")
 
-# 4. Set Hyperparameters
-xgb.set_hyperparameters(
-    objective='binary:logistic',
-    num_round=50
-)
-
-# 5. Define Data Inputs
-train_input = TrainingInput(
-    f"s3://{BUCKET_NAME}/train/train.csv", content_type="csv"
-)
-
-# 6. START TRAINING
-print("🚀 Starting Training Job... (This will take ~4 minutes)")
-xgb.fit({'train': train_input})
-
-print("✅ Training Finished!")
+if __name__ == "__main__":
+    train()

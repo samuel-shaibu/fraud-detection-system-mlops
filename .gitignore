@@ -6,3 +6,4 @@ __pycache__/
 *.tar.gz
 *.csv
 "@ | Out-File -Encoding API -FilePath .gitignore
+mlruns/
